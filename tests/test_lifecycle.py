@@ -4,8 +4,17 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from aiohttp import ClientSession
 
-from app.config import Settings
+from app.config import LLMSettings, Settings
 from app.health import HealthState, start_health_server
+
+
+@pytest.fixture
+def llm_settings():
+    return LLMSettings(
+        base_url="https://api.groq.com/openai/v1",
+        api_key="fake-key-for-tests",
+        model="openai/gpt-oss-120b",
+    )
 
 
 async def test_http_health_returns_503_then_200(unused_tcp_port):
@@ -33,7 +42,7 @@ async def test_http_health_returns_503_then_200(unused_tcp_port):
         await runner.cleanup()
 
 
-async def test_telegram_failure_closes_pool_and_session(monkeypatch):
+async def test_telegram_failure_closes_pool_and_session(monkeypatch, llm_settings):
     # Arrange
     from app import __main__ as application
 
@@ -47,13 +56,13 @@ async def test_telegram_failure_closes_pool_and_session(monkeypatch):
     settings = Settings(bot_token="unused", postgres_password="unused")
     # Act
     with pytest.raises(ConnectionError):
-        await application.run(settings)
+        await application.run(settings, llm_settings)
     # Assert
     pool.close.assert_awaited_once()
     bot.session.close.assert_awaited_once()
 
 
-async def test_db_failure_closes_http_session(monkeypatch):
+async def test_db_failure_closes_http_session(monkeypatch, llm_settings):
     # Arrange
     from app import __main__ as application
 
@@ -62,7 +71,9 @@ async def test_db_failure_closes_http_session(monkeypatch):
     monkeypatch.setattr(application, "create_bot", Mock(return_value=bot))
     # Act
     with pytest.raises(ConnectionError):
-        await application.run(Settings(bot_token="unused", postgres_password="unused"))
+        await application.run(
+            Settings(bot_token="unused", postgres_password="unused"), llm_settings
+        )
     # Assert
     bot.session.close.assert_awaited_once()
 
