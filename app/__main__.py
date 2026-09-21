@@ -4,7 +4,7 @@ import logging
 
 from aiogram import Dispatcher
 
-from app.config import ConfigError, Settings
+from app.config import ConfigError, LLMSettings, Settings
 from app.db import create_pool
 from app.handlers.echo import router
 from app.health import HealthState, start_health_server
@@ -66,10 +66,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         settings = Settings.load(args.env_file)
+        llm_settings = LLMSettings.load(args.env_file)
     except ConfigError as exc:
         print(str(exc))
         return 1
-    configure_logging(settings)
+    configure_logging(settings, llm_settings)
     try:
         asyncio.run(run(settings))
     except KeyboardInterrupt:

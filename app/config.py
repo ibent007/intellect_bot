@@ -87,3 +87,74 @@ class Settings:
             log_level=level,
             health_port=port("HEALTH_PORT", "8080"),
         )
+
+
+@dataclass(frozen=True)
+class LLMSettings:
+    base_url: str
+    api_key: str = field(repr=False)
+    model: str
+    reasoning_effort: str = "low"
+    timeout_seconds: int = 60
+    max_completion_tokens: int = 2048
+
+    @classmethod
+    def load(
+        cls, env_file: Path | str = ".env", *, environ: Mapping[str, str] | None = None
+    ) -> "LLMSettings":
+        values = {
+            **dotenv_values(env_file, interpolate=False),
+            **(os.environ if environ is None else environ),
+        }
+
+        def required(name: str) -> str:
+            result = (values.get(name) or "").strip()
+            if not result:
+                raise ConfigError(f"{name}: обязательная настройка не задана.")
+            return result
+
+        def positive_integer(name: str, default: str) -> int:
+            raw = values.get(name)
+            try:
+                result = int(default if raw is None else raw)
+                if result <= 0:
+                    raise ValueError
+                return result
+            except ValueError:
+                raise ConfigError(f"{name}: нужно положительное целое число.") from None
+
+        base_url = required("LLM_BASE_URL").rstrip("/")
+        try:
+            parsed = urlsplit(base_url)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or any(character.isspace() for character in base_url)
+            ):
+                raise ValueError
+            if parsed.port is not None and not 1 <= parsed.port <= 65535:
+                raise ValueError
+        except ValueError:
+            raise ConfigError(
+                "LLM_BASE_URL: нужен HTTPS-адрес API без логина, пароля и параметров."
+            ) from None
+
+        api_key = required("LLM_API_KEY")
+        model = required("LLM_MODEL")
+        effort = (values.get("LLM_REASONING_EFFORT") or "low").strip()
+
+        if effort not in {"low", "medium", "high"}:
+            raise ConfigError("LLM_REASONING_EFFORT: используйте low, medium или high.")
+
+        return cls(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            reasoning_effort=effort,
+            timeout_seconds=positive_integer("LLM_TIMEOUT_SECONDS", "60"),
+            max_completion_tokens=positive_integer("LLM_MAX_COMPLETION_TOKENS", "2048"),
+        )

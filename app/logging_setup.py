@@ -2,7 +2,7 @@ import logging
 import re
 from urllib.parse import unquote, urlsplit
 
-from app.config import Settings
+from app.config import LLMSettings, Settings
 
 
 class SecretFilter(logging.Filter):
@@ -24,7 +24,7 @@ class SecretFilter(logging.Filter):
         return True
 
 
-def configure_logging(settings: Settings) -> None:
+def configure_logging(settings: Settings, llm_settings: LLMSettings | None = None) -> None:
     proxy = urlsplit(settings.telegram_proxy_url)
     handler = logging.StreamHandler()
     handler.addFilter(
@@ -32,6 +32,7 @@ def configure_logging(settings: Settings) -> None:
             [
                 settings.bot_token,
                 settings.postgres_password,
+                llm_settings.api_key if llm_settings is not None else "",
                 settings.telegram_proxy_url,
                 proxy.password or "",
                 unquote(proxy.password or ""),
