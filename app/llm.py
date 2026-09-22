@@ -54,9 +54,13 @@ class LLMClient:
             "messages": messages,
             "temperature": temperature,
             "reasoning_effort": self.settings.reasoning_effort,
-            "include_reasoning": False,
             "max_completion_tokens": self.settings.max_completion_tokens,
         }
+
+        if self.settings.model == "qwen/qwen3.8-27b":
+            payload["reasoning_format"] = "hidden"
+        else:
+            payload["include_reasoning"] = False
 
         logger.info(
             "Начало вызова LLM: request_id=%s model=%s",

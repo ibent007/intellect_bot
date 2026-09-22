@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -242,3 +243,36 @@ async def test_error_logs_do_not_contain_sensitive_data(llm_case, caplog):
     assert "duration_ms=" in caplog.text
     assert "fake-key-for-tests" not in caplog.text
     assert "private-user-text" not in caplog.text
+
+
+@pytest.mark.parametrize("temperature", [0.0, 0.3, 0.7, 1.0])
+async def test_qwen_request_preserves_messages_and_parameters(llm_case, temperature):
+    # Arrange
+    original, session, _, _, _ = llm_case
+    settings = replace(
+        original.settings,
+        model="qwen/qwen3.8-27b",
+        max_completion_tokens=4096,
+    )
+    client = LLMClient(settings, session)
+    messages = [
+        {"role": "system", "content": "Объясняй программирование."},
+        {"role": "user", "content": "Что такое переменная?"},
+        {"role": "assistant", "content": "Это имя, связанное со значением."},
+        {"role": "user", "content": "Приведи пример."},
+    ]
+
+    # Act
+    result = await client.generate(messages, temperature)
+
+    # Assert
+    session.post.assert_called_once()
+    assert session.post.call_args.kwargs["json"] == {
+        "model": "qwen/qwen3.8-27b",
+        "messages": messages,
+        "temperature": temperature,
+        "reasoning_effort": "low",
+        "max_completion_tokens": 4096,
+        "reasoning_format": "hidden",
+    }
+    assert result.text == "Ответ модели"
