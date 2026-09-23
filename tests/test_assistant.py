@@ -6,6 +6,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.methods import SendMessage
 from aiogram.types import Chat, Message, Update, User
 
+from app.config import LLMSettings
+from app.dialogue import DialogueService
 from app.handlers import assistant
 from app.llm import LLMError, LLMResponse
 from app.prompts import STUDY_PROMPT
@@ -20,11 +22,24 @@ def handler_case(monkeypatch):
 
     llm = MagicMock()
     llm.generate = AsyncMock(return_value=LLMResponse(text="Ответ модели"))
+    storage = MagicMock()
+    storage.get_or_create_user = AsyncMock(return_value={"mode": "study", "temperature": 0.3})
+    storage.get_history = AsyncMock(return_value=[])
+    storage.save_turn = AsyncMock()
+    storage.clear_history = AsyncMock()
+
+    settings = LLMSettings(
+        base_url="https://api.groq.com/openai/v1",
+        api_key="fake-key-for-tests",
+        model="openai/gpt-oss-120b",
+    )
+    dialogue = DialogueService(storage, llm, settings)
 
     typing = MagicMock(return_value=AsyncMock())
     monkeypatch.setattr(assistant.ChatActionSender, "typing", typing)
 
     dispatcher = Dispatcher()
+    dispatcher["dialogue"] = dialogue
     dispatcher.include_router(assistant.create_router())
 
     return dispatcher, bot, llm, typing
@@ -42,7 +57,6 @@ async def send_update(handler_case, text, chat_type="private"):
     await dispatcher.feed_update(
         bot,
         Update(update_id=1, message=message),
-        llm=llm,
     )
 
 
@@ -63,12 +77,13 @@ async def test_start_returns_help_without_calling_llm(handler_case):
     messages = sent_messages(bot)
     assert len(messages) == 1
     assert messages[0].text == (
-        "Привет! Я AI-ассистент студента.\n\n"
+        "Привет! Я твой AI-ассистент.\n\n"
         "Сейчас я умею объяснять вопросы по программированию. "
         "Напиши вопрос обычным текстом.\n\n"
-        "Пока каждый вопрос обрабатывается отдельно, без истории диалога.\n\n"
+        "Я учитываю недавнюю историю нашего диалога и сохраняю её после перезапуска.\n\n"
         "Команды:\n"
-        "/start — показать эту справку."
+        "/start — показать эту справку.\n"
+        "/reset — очистить историю диалога."
     )
     llm.generate.assert_not_awaited()
 
@@ -179,3 +194,50 @@ async def test_long_answer_is_sent_in_order_without_text_loss(handler_case):
     assert "".join(message.text for message in messages) == text
     assert all(0 < len(message.text.encode("utf-16-le")) // 2 <= 4000 for message in messages)
     assert all(message.parse_mode is None for message in messages)
+
+
+async def test_reset_clears_history_without_calling_llm(handler_case):
+    # Arrange
+    dispatcher, bot, llm, typing = handler_case
+    storage = dispatcher["dialogue"].storage
+
+    # Act
+    await send_update(handler_case, "/reset")
+
+    # Assert
+    storage.clear_history.assert_awaited_once_with(42)
+    llm.generate.assert_not_awaited()
+    typing.assert_not_called()
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert messages[0].text == ("История диалога очищена. Режим и temperature сохранены.")
+
+
+async def test_reset_failure_does_not_report_success(handler_case):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    dispatcher["dialogue"].storage.clear_history.side_effect = OSError("private-db-details")
+
+    # Act
+    await send_update(handler_case, "/reset")
+
+    # Assert
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert messages[0].text == ("Не удалось очистить историю. Попробуйте позже.")
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("chat_type", ["group", "supergroup"])
+async def test_reset_in_group_does_not_clear_history(handler_case, chat_type):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    storage = dispatcher["dialogue"].storage
+
+    # Act
+    await send_update(handler_case, "/reset", chat_type)
+
+    # Assert
+    storage.clear_history.assert_not_awaited()
+    llm.generate.assert_not_awaited()
+    assert sent_messages(bot) == []

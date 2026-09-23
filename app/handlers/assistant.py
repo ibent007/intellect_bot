@@ -1,18 +1,19 @@
 from aiogram import Bot, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
-from app.llm import LLMClient, LLMError
-from app.prompts import STUDY_PROMPT
+from app.dialogue import DialogueError, DialogueService
+from app.llm import LLMError
 
 START_TEXT = (
-    "Привет! Я AI-ассистент студента.\n\n"
+    "Привет! Я твой AI-ассистент.\n\n"
     "Сейчас я умею объяснять вопросы по программированию. "
     "Напиши вопрос обычным текстом.\n\n"
-    "Пока каждый вопрос обрабатывается отдельно, без истории диалога.\n\n"
+    "Я учитываю недавнюю историю нашего диалога и сохраняю её после перезапуска.\n\n"
     "Команды:\n"
-    "/start — показать эту справку."
+    "/start — показать эту справку.\n"
+    "/reset — очистить историю диалога."
 )
 
 UNKNOWN_COMMAND_TEXT = (
@@ -51,21 +52,16 @@ async def unknown_command(message: Message) -> None:
     await message.answer(UNKNOWN_COMMAND_TEXT, parse_mode=None)
 
 
-async def answer_question(message: Message, bot: Bot, llm: LLMClient) -> None:
+async def answer_question(message: Message, bot: Bot, dialogue: DialogueService) -> None:
     text = message.text
     if text is None or not text.strip():
         await message.answer(EMPTY_TEXT, parse_mode=None)
         return
 
-    messages = [
-        {"role": "system", "content": STUDY_PROMPT},
-        {"role": "user", "content": text},
-    ]
-
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
-            result = await llm.generate(messages, temperature=0.3)
-    except LLMError as error:
+            result = await dialogue.reply(message.chat.id, text)
+    except (LLMError, DialogueError) as error:
         await message.answer(error.user_message, parse_mode=None)
         return
 
@@ -73,11 +69,25 @@ async def answer_question(message: Message, bot: Bot, llm: LLMClient) -> None:
         await message.answer(part, parse_mode=None)
 
 
+async def reset_command(message: Message, dialogue: DialogueService) -> None:
+    try:
+        await dialogue.reset(message.chat.id)
+    except DialogueError as error:
+        await message.answer(error.user_message, parse_mode=None)
+        return
+
+    await message.answer(
+        "История диалога очищена. Режим и temperature сохранены.",
+        parse_mode=None,
+    )
+
+
 def create_router() -> Router:
     router = Router(name="assistant")
     router.message.filter(F.chat.type == "private", F.text)
 
     router.message.register(start_command, CommandStart())
+    router.message.register(reset_command, Command("reset"))
     router.message.register(unknown_command, F.text.startswith("/"))
     router.message.register(answer_question)
 
