@@ -97,3 +97,18 @@ class DialogueStorage:
                     "DELETE FROM dialogue_messages WHERE chat_id = $1",
                     chat_id,
                 )
+
+    async def set_temperature(self, chat_id: int, temperature: float) -> None:
+        if isinstance(temperature, bool) or temperature not in (0.0, 0.3, 0.7, 1.0):
+            raise ValueError("Недопустимая temperature.")
+
+        await self.pool.execute(
+            """
+            INSERT INTO bot_users (chat_id, temperature)
+            VALUES ($1, $2)
+            ON CONFLICT (chat_id)
+            DO UPDATE SET temperature = EXCLUDED.temperature
+            """,
+            chat_id,
+            temperature,
+        )

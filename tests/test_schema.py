@@ -1,10 +1,13 @@
 import os
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
-from app.config import Settings
+from app.config import LLMSettings, Settings
+from app.dialogue import DialogueService
+from app.llm import LLMResponse
 from app.schema import initialize_schema
 from app.storage import DialogueStorage
 
@@ -352,3 +355,68 @@ async def test_invalid_mode_preserves_existing_dialogue(database_pool):
         {"role": "user", "content": "Вопрос"},
         {"role": "assistant", "content": "Ответ"},
     ]
+
+
+@pytest.mark.parametrize("temperature", [0.0, 0.3, 0.7, 1.0])
+async def test_temperature_persists_without_changing_dialogue(database_pool, temperature):
+    # Arrange
+    storage = DialogueStorage(database_pool)
+    await storage.set_mode(101, "review")
+    await storage.get_or_create_user(202)
+    await storage.save_turn(101, "Мой вопрос", "Мой ответ")
+    await storage.save_turn(202, "Чужой вопрос", "Чужой ответ")
+
+    # Act
+    await storage.set_temperature(101, temperature)
+    await database_pool.expire_connections()
+    restored = DialogueStorage(database_pool)
+    user = await restored.get_or_create_user(101)
+    other = await restored.get_or_create_user(202)
+
+    # Assert
+    assert user["temperature"] == temperature
+    assert user["mode"] == "review"
+    assert other["temperature"] == 0.3
+    assert await restored.get_history(101, 12) == [
+        {"role": "user", "content": "Мой вопрос"},
+        {"role": "assistant", "content": "Мой ответ"},
+    ]
+    assert await restored.get_history(202, 12) == [
+        {"role": "user", "content": "Чужой вопрос"},
+        {"role": "assistant", "content": "Чужой ответ"},
+    ]
+
+
+async def test_temperature_can_be_set_before_first_question(database_pool):
+    # Arrange
+    storage = DialogueStorage(database_pool)
+
+    # Act
+    await storage.set_temperature(101, 1.0)
+    user = await storage.get_or_create_user(101)
+
+    # Assert
+    assert user["temperature"] == 1.0
+    assert user["mode"] == "study"
+    assert await storage.get_history(101, 12) == []
+
+
+async def test_next_request_uses_changed_temperature(database_pool):
+    # Arrange
+    storage = DialogueStorage(database_pool)
+    llm = MagicMock()
+    llm.generate = AsyncMock(return_value=LLMResponse(text="Ответ"))
+    settings = LLMSettings(
+        base_url="https://api.groq.com/openai/v1",
+        api_key="fake-key",
+        model="qwen/qwen3.8-27b",
+    )
+    service = DialogueService(storage, llm, settings)
+
+    # Act
+    await service.set_temperature(101, 1.0)
+    await service.reply(101, "Что такое переменная?")
+
+    # Assert
+    llm.generate.assert_awaited_once()
+    assert llm.generate.call_args.kwargs["temperature"] == 1.0

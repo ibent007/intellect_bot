@@ -18,8 +18,8 @@ START_TEXT = (
     "/study — обучение программированию.\n"
     "/translate — перевод между русским и английским.\n"
     "/review — проверка кода.\n"
-    "/reset — очистить историю диалога.\n\n"
-    "Выбор режима очищает историю. Temperature сохраняется.\n"
+    "/reset — очистить историю диалога.\n"
+    "/settings — показать настройки.\n\n"
     "По умолчанию включён режим обучения."
 )
 
@@ -110,6 +110,57 @@ async def mode_command(
     )
 
 
+async def settings_command(message: Message, dialogue: DialogueService) -> None:
+    try:
+        settings = await dialogue.get_settings(message.chat.id)
+    except DialogueError as error:
+        await message.answer(error.user_message, parse_mode=None)
+        return
+
+    await message.answer(
+        f"Режим: {MODE_NAMES[settings['mode']]}.\n"
+        f"Модель: {settings['model']}\n"
+        f"Temperature: {settings['temperature']:.1f}\n\n"
+        "Изменить temperature:\n"
+        "/temperature 0\n"
+        "/temperature 0.3\n"
+        "/temperature 0.7\n"
+        "/temperature 1\n\n"
+        "Меньшие значения обычно дают более сдержанные ответы, "
+        "большие — более разнообразные. "
+        "Temperature не гарантирует правильность ответа.",
+        parse_mode=None,
+    )
+
+
+async def temperature_command(
+    message: Message,
+    command: CommandObject,
+    dialogue: DialogueService,
+) -> None:
+    try:
+        temperature = float(command.args or "")
+    except ValueError:
+        await message.answer(
+            "Укажите temperature: 0, 0.3, 0.7 или 1.\nНапример: /temperature 0.7",
+            parse_mode=None,
+        )
+        return
+
+    try:
+        await dialogue.set_temperature(message.chat.id, temperature)
+    except DialogueError as error:
+        await message.answer(error.user_message, parse_mode=None)
+        return
+
+    await message.answer(
+        f"Temperature: {temperature:.1f}.\n"
+        "Настройка сохранена и применяется к следующему запросу. "
+        "История сохранена.",
+        parse_mode=None,
+    )
+
+
 def create_router() -> Router:
     router = Router(name="assistant")
     router.message.filter(F.chat.type == "private", F.text)
@@ -120,6 +171,8 @@ def create_router() -> Router:
         mode_command,
         Command("study", "translate", "review"),
     )
+    router.message.register(settings_command, Command("settings"))
+    router.message.register(temperature_command, Command("temperature"))
     router.message.register(unknown_command, F.text.startswith("/"))
     router.message.register(answer_question)
 

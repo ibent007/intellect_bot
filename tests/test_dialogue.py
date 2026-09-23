@@ -23,6 +23,7 @@ def dialogue_case():
     storage.save_turn = AsyncMock()
     storage.clear_history = AsyncMock()
     storage.set_mode = AsyncMock()
+    storage.set_temperature = AsyncMock()
 
     llm = MagicMock()
     llm.generate = AsyncMock(return_value=LLMResponse(text="Новый ответ"))
@@ -246,3 +247,76 @@ async def test_mode_change_failure_has_safe_message(dialogue_case, caplog):
     assert error.value.user_message == ("Не удалось изменить режим. Попробуйте позже.")
     assert "private-db-details" not in caplog.text
     llm.generate.assert_not_awaited()
+
+
+async def test_settings_include_saved_values_and_current_model(dialogue_case):
+    # Arrange
+    service, storage, llm = dialogue_case
+
+    # Act
+    settings = await service.get_settings(101)
+
+    # Assert
+    assert settings == {
+        "mode": "study",
+        "temperature": 0.7,
+        "model": service.settings.model,
+    }
+    storage.get_or_create_user.assert_awaited_once_with(101)
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("temperature", [0.0, 0.3, 0.7, 1.0])
+async def test_temperature_change_preserves_history(dialogue_case, temperature):
+    # Arrange
+    service, storage, llm = dialogue_case
+
+    # Act
+    await service.set_temperature(101, temperature)
+
+    # Assert
+    storage.set_temperature.assert_awaited_once_with(101, temperature)
+    storage.clear_history.assert_not_awaited()
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("temperature", [-1.0, 0.5, 2.0, True, float("nan")])
+async def test_invalid_temperature_does_not_change_storage(dialogue_case, temperature):
+    # Arrange
+    service, storage, llm = dialogue_case
+
+    # Act
+    with pytest.raises(DialogueError):
+        await service.set_temperature(101, temperature)
+
+    # Assert
+    storage.set_temperature.assert_not_awaited()
+    llm.generate.assert_not_awaited()
+
+
+async def test_temperature_failure_has_safe_message(dialogue_case, caplog):
+    # Arrange
+    service, storage, _ = dialogue_case
+    storage.set_temperature.side_effect = OSError("private-db-details")
+
+    # Act
+    with pytest.raises(DialogueError) as error:
+        await service.set_temperature(101, 0.3)
+
+    # Assert
+    assert error.value.user_message == ("Не удалось изменить temperature. Попробуйте позже.")
+    assert "private-db-details" not in caplog.text
+
+
+async def test_settings_failure_has_safe_message(dialogue_case, caplog):
+    # Arrange
+    service, storage, _ = dialogue_case
+    storage.get_or_create_user.side_effect = OSError("private-db-details")
+
+    # Act
+    with pytest.raises(DialogueError) as error:
+        await service.get_settings(101)
+
+    # Assert
+    assert error.value.user_message == ("Не удалось прочитать настройки. Попробуйте позже.")
+    assert "private-db-details" not in caplog.text

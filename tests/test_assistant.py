@@ -28,6 +28,7 @@ def handler_case(monkeypatch):
     storage.save_turn = AsyncMock()
     storage.clear_history = AsyncMock()
     storage.set_mode = AsyncMock()
+    storage.set_temperature = AsyncMock()
 
     settings = LLMSettings(
         base_url="https://api.groq.com/openai/v1",
@@ -88,8 +89,8 @@ async def test_start_returns_help_without_calling_llm(handler_case):
         "/study — обучение программированию.\n"
         "/translate — перевод между русским и английским.\n"
         "/review — проверка кода.\n"
-        "/reset — очистить историю диалога.\n\n"
-        "Выбор режима очищает историю. Temperature сохраняется.\n"
+        "/reset — очистить историю диалога.\n"
+        "/settings — показать настройки.\n\n"
         "По умолчанию включён режим обучения."
     )
     llm.generate.assert_not_awaited()
@@ -289,4 +290,78 @@ async def test_mode_command_failure_does_not_report_success(handler_case):
     messages = sent_messages(bot)
     assert len(messages) == 1
     assert messages[0].text == ("Не удалось изменить режим. Попробуйте позже.")
+    llm.generate.assert_not_awaited()
+
+
+async def test_settings_command_shows_values_without_llm(handler_case):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    dialogue = dispatcher["dialogue"]
+
+    # Act
+    await send_update(handler_case, "/settings")
+
+    # Assert
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert "Режим: Обучение." in messages[0].text
+    assert f"Модель: {dialogue.settings.model}" in messages[0].text
+    assert "Temperature: 0.3" in messages[0].text
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("argument", "temperature"),
+    [("0", 0.0), ("0.3", 0.3), ("0.7", 0.7), ("1", 1.0)],
+)
+async def test_temperature_command_saves_value(handler_case, argument, temperature):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    storage = dispatcher["dialogue"].storage
+
+    # Act
+    await send_update(handler_case, f"/temperature {argument}")
+
+    # Assert
+    storage.set_temperature.assert_awaited_once_with(42, temperature)
+    storage.clear_history.assert_not_awaited()
+    llm.generate.assert_not_awaited()
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert messages[0].text == (
+        f"Temperature: {temperature:.1f}.\n"
+        "Настройка сохранена и применяется к следующему запросу. "
+        "История сохранена."
+    )
+
+
+@pytest.mark.parametrize("argument", ["", "abc", "0.5", "nan", "inf"])
+async def test_invalid_temperature_command_does_not_save(handler_case, argument):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    storage = dispatcher["dialogue"].storage
+
+    # Act
+    await send_update(handler_case, f"/temperature {argument}".strip())
+
+    # Assert
+    storage.set_temperature.assert_not_awaited()
+    llm.generate.assert_not_awaited()
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert "0.3" in messages[0].text
+
+
+async def test_temperature_storage_failure_returns_error(handler_case):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    dispatcher["dialogue"].storage.set_temperature.side_effect = OSError("private-db-details")
+
+    # Act
+    await send_update(handler_case, "/temperature 0.7")
+
+    # Assert
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert messages[0].text == ("Не удалось изменить temperature. Попробуйте позже.")
     llm.generate.assert_not_awaited()
