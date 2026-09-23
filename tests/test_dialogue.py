@@ -304,7 +304,9 @@ async def test_temperature_failure_has_safe_message(dialogue_case, caplog):
         await service.set_temperature(101, 0.3)
 
     # Assert
-    assert error.value.user_message == ("Не удалось изменить temperature. Попробуйте позже.")
+    assert error.value.user_message == (
+        "Не удалось изменить уровень креативности. Попробуйте позже."
+    )
     assert "private-db-details" not in caplog.text
 
 

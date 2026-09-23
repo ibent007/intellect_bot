@@ -1,6 +1,15 @@
+import asyncio
+from contextlib import suppress
+
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.utils.chat_action import ChatActionSender
 
 from app.dialogue import DialogueError, DialogueService
@@ -14,12 +23,13 @@ START_TEXT = (
     "Я учитываю недавнюю историю нашего диалога "
     "и сохраняю её после перезапуска.\n\n"
     "Команды:\n"
-    "/start — показать эту справку.\n"
     "/study — обучение программированию.\n"
     "/translate — перевод между русским и английским.\n"
     "/review — проверка кода.\n"
+    "/settings — показать настройки.\n"
+    "/temperature — изменить уровень креативности.\n"
     "/reset — очистить историю диалога.\n"
-    "/settings — показать настройки.\n\n"
+    "/start — показать это меню.\n\n"
     "По умолчанию включён режим обучения."
 )
 
@@ -28,6 +38,84 @@ UNKNOWN_COMMAND_TEXT = (
 )
 
 EMPTY_TEXT = "Напишите непустой текстовый вопрос."
+
+
+TEMPERATURE_BUTTONS = {
+    "0": 0.0,
+    "0.3": 0.3,
+    "0.7": 0.7,
+    "1": 1.0,
+}
+
+
+def main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📚 Обучение", callback_data="menu:study"),
+                InlineKeyboardButton(text="🌐 Перевод", callback_data="menu:translate"),
+            ],
+            [
+                InlineKeyboardButton(text="🔎 Проверка кода", callback_data="menu:review"),
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
+            ],
+            [
+                InlineKeyboardButton(text="🗑 Сброс памяти", callback_data="menu:reset"),
+                InlineKeyboardButton(text="📖 Главное меню", callback_data="menu:home"),
+            ],
+        ]
+    )
+
+
+def settings_keyboard(temperature: float) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            text=f"✓ {label}" if value == temperature else label,
+            callback_data=f"menu:temperature:{label}",
+        )
+        for label, value in TEMPERATURE_BUTTONS.items()
+    ]
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            buttons,
+            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu:home")],
+        ]
+    )
+
+
+def settings_text(settings: dict) -> str:
+    model_name = {
+        "qwen/qwen3.8-27b": "Qwen 3.8 27B",
+        "openai/gpt-oss-120b": "GPT-OSS 120B",
+    }.get(settings["model"], settings["model"])
+
+    return (
+        f"Режим: {MODE_NAMES[settings['mode']]}\n"
+        f"Модель: {model_name}\n"
+        f"Уровень креативности: {settings['temperature']:.1f}\n\n"
+        "Выберите уровень креативности кнопкой ниже.\n"
+        "Меньшие значения обычно дают более сдержанные ответы, "
+        "большие — более разнообразные.\n"
+        "Более высокий уровень не гарантирует более правильный ответ."
+    )
+
+
+async def edit_menu(
+    message: Message,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    try:
+        await message.edit_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode=None,
+        )
+    except TelegramBadRequest as error:
+        # Повторное нажатие может оставить текст и кнопки прежними.
+        if "message is not modified" not in error.message.lower():
+            raise
 
 
 def split_answer(text: str) -> list[str]:
@@ -52,7 +140,11 @@ def split_answer(text: str) -> list[str]:
 
 
 async def start_command(message: Message) -> None:
-    await message.answer(START_TEXT, parse_mode=None)
+    await message.answer(
+        START_TEXT,
+        reply_markup=main_keyboard(),
+        parse_mode=None,
+    )
 
 
 async def unknown_command(message: Message) -> None:
@@ -65,8 +157,21 @@ async def answer_question(message: Message, bot: Bot, dialogue: DialogueService)
         await message.answer(EMPTY_TEXT, parse_mode=None)
         return
 
+    # Ошибка отправки индикатора не должна мешать ответу.
+    with suppress(TelegramAPIError, TimeoutError):
+        async with asyncio.timeout(2):
+            await bot.send_chat_action(
+                chat_id=message.chat.id,
+                action="typing",
+            )
+
     try:
-        async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        async with ChatActionSender.typing(
+            bot=bot,
+            chat_id=message.chat.id,
+            initial_sleep=4,
+            interval=4,
+        ):
             result = await dialogue.reply(message.chat.id, text)
     except (LLMError, DialogueError) as error:
         await message.answer(error.user_message, parse_mode=None)
@@ -84,7 +189,7 @@ async def reset_command(message: Message, dialogue: DialogueService) -> None:
         return
 
     await message.answer(
-        "История диалога очищена. Режим и temperature сохранены.",
+        "История диалога очищена. Режим и уровень креативности сохранены.",
         parse_mode=None,
     )
 
@@ -103,8 +208,8 @@ async def mode_command(
         return
 
     await message.answer(
-        f"Режим: {MODE_NAMES[mode]}.\n"
-        "История очищена. Temperature сохранена.\n"
+        f"Режим: {MODE_NAMES[mode]}\n"
+        "История очищена. Уровень креативности сохранён.\n"
         "Отправьте новое сообщение.",
         parse_mode=None,
     )
@@ -118,17 +223,8 @@ async def settings_command(message: Message, dialogue: DialogueService) -> None:
         return
 
     await message.answer(
-        f"Режим: {MODE_NAMES[settings['mode']]}.\n"
-        f"Модель: {settings['model']}\n"
-        f"Temperature: {settings['temperature']:.1f}\n\n"
-        "Изменить temperature:\n"
-        "/temperature 0\n"
-        "/temperature 0.3\n"
-        "/temperature 0.7\n"
-        "/temperature 1\n\n"
-        "Меньшие значения обычно дают более сдержанные ответы, "
-        "большие — более разнообразные. "
-        "Temperature не гарантирует правильность ответа.",
+        settings_text(settings),
+        reply_markup=settings_keyboard(settings["temperature"]),
         parse_mode=None,
     )
 
@@ -142,7 +238,7 @@ async def temperature_command(
         temperature = float(command.args or "")
     except ValueError:
         await message.answer(
-            "Укажите temperature: 0, 0.3, 0.7 или 1.\nНапример: /temperature 0.7",
+            "Укажите уровень креативности: 0, 0.3, 0.7 или 1.\nНапример: /temperature 0.7",
             parse_mode=None,
         )
         return
@@ -154,11 +250,83 @@ async def temperature_command(
         return
 
     await message.answer(
-        f"Temperature: {temperature:.1f}.\n"
-        "Настройка сохранена и применяется к следующему запросу. "
-        "История сохранена.",
+        f"Уровень креативности: {temperature:.1f}.",
         parse_mode=None,
     )
+
+
+async def menu_callback(
+    callback: CallbackQuery,
+    dialogue: DialogueService,
+) -> None:
+    message = callback.message
+
+    if (
+        not isinstance(message, Message)
+        or message.chat.type != "private"
+        or message.chat.id != callback.from_user.id
+    ):
+        await callback.answer(
+            "Откройте меню в личном чате с ботом.",
+            show_alert=True,
+        )
+        return
+
+    action = (callback.data or "").removeprefix("menu:")
+    temperature_actions = {
+        f"temperature:{label}": value for label, value in TEMPERATURE_BUTTONS.items()
+    }
+    allowed = {"home", "settings", "reset", *MODE_NAMES, *temperature_actions}
+
+    if action not in allowed:
+        await callback.answer(
+            "Неизвестная кнопка. Откройте /start.",
+            show_alert=True,
+        )
+        return
+
+    # Сразу убираем индикатор ожидания на кнопке.
+    await callback.answer()
+
+    keyboard = main_keyboard()
+
+    try:
+        if action == "home":
+            text = START_TEXT
+
+        elif action in MODE_NAMES:
+            await dialogue.set_mode(message.chat.id, action)
+            text = (
+                f"Режим: {MODE_NAMES[action]}\n\n"
+                "История очищена. Уровень креативности сохранён.\n"
+                "Отправьте новое сообщение.\n\n"
+                "Выбор другого режима также очищает историю."
+            )
+
+        elif action == "reset":
+            await dialogue.reset(message.chat.id)
+            text = (
+                "Память диалога очищена.\n\n"
+                "Режим и уровень креативности сохранены.\n"
+                "Сообщения в Telegram остались в чате.\n\n"
+                "Можно начать новый диалог."
+            )
+
+        else:
+            if action in temperature_actions:
+                await dialogue.set_temperature(
+                    message.chat.id,
+                    temperature_actions[action],
+                )
+
+            settings = await dialogue.get_settings(message.chat.id)
+            text = settings_text(settings)
+            keyboard = settings_keyboard(settings["temperature"])
+
+    except DialogueError as error:
+        text = error.user_message
+
+    await edit_menu(message, text, keyboard)
 
 
 def create_router() -> Router:
@@ -175,5 +343,10 @@ def create_router() -> Router:
     router.message.register(temperature_command, Command("temperature"))
     router.message.register(unknown_command, F.text.startswith("/"))
     router.message.register(answer_question)
+
+    router.callback_query.register(
+        menu_callback,
+        F.data.startswith("menu:"),
+    )
 
     return router

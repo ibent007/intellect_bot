@@ -139,7 +139,7 @@ class DialogueService:
 
     async def set_temperature(self, chat_id: int, temperature: float) -> None:
         if isinstance(temperature, bool) or temperature not in (0.0, 0.3, 0.7, 1.0):
-            raise DialogueError("Допустимые значения temperature: 0.0, 0.3, 0.7, 1.0.")
+            raise DialogueError("Допустимые значения уровня креативности: 0.0, 0.3, 0.7, 1.0.")
 
         async with self.locks[chat_id]:
             try:
@@ -151,4 +151,6 @@ class DialogueService:
                 TimeoutError,
             ):
                 logger.warning("Ошибка сохранения temperature.")
-                raise DialogueError("Не удалось изменить temperature. Попробуйте позже.") from None
+                raise DialogueError(
+                    "Не удалось изменить уровень креативности. Попробуйте позже."
+                ) from None

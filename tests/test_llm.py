@@ -114,7 +114,7 @@ async def test_invalid_temperature_does_not_call_api(llm_case, temperature):
         await client.generate([{"role": "user", "content": "Вопрос"}], temperature)
 
     # Assert
-    assert str(error.value) == ("Допустимые значения temperature: 0.0, 0.3, 0.7, 1.0.")
+    assert str(error.value) == ("Допустимые значения уровня креативности: 0.0, 0.3, 0.7, 1.0.")
     session.post.assert_not_called()
 
 
