@@ -286,3 +286,69 @@ async def test_reset_is_safe_for_missing_and_empty_history(database_pool):
         )
         == 1
     )
+
+
+@pytest.mark.parametrize("mode", ["study", "translate", "review"])
+async def test_mode_change_preserves_temperature_and_other_user(database_pool, mode):
+    # Arrange
+    storage = DialogueStorage(database_pool)
+    await storage.get_or_create_user(101)
+    await storage.get_or_create_user(202)
+    await database_pool.execute(
+        "UPDATE bot_users SET temperature = $2 WHERE chat_id = $1",
+        101,
+        0.7,
+    )
+    await storage.save_turn(101, "Старый вопрос", "Старый ответ")
+    await storage.save_turn(202, "Чужой вопрос", "Чужой ответ")
+
+    # Act
+    await storage.set_mode(101, mode)
+    await database_pool.expire_connections()
+    restored = DialogueStorage(database_pool)
+    user = await restored.get_or_create_user(101)
+    other = await restored.get_or_create_user(202)
+
+    # Assert
+    assert user["mode"] == mode
+    assert user["temperature"] == 0.7
+    assert await restored.get_history(101, 12) == []
+    assert other["mode"] == "study"
+    assert other["temperature"] == 0.3
+    assert await restored.get_history(202, 12) == [
+        {"role": "user", "content": "Чужой вопрос"},
+        {"role": "assistant", "content": "Чужой ответ"},
+    ]
+
+
+async def test_mode_can_be_selected_before_first_question(database_pool):
+    # Arrange
+    storage = DialogueStorage(database_pool)
+
+    # Act
+    await storage.set_mode(101, "translate")
+    user = await storage.get_or_create_user(101)
+
+    # Assert
+    assert user["mode"] == "translate"
+    assert user["temperature"] == 0.3
+    assert await storage.get_history(101, 12) == []
+
+
+async def test_invalid_mode_preserves_existing_dialogue(database_pool):
+    # Arrange
+    storage = DialogueStorage(database_pool)
+    await storage.get_or_create_user(101)
+    await storage.save_turn(101, "Вопрос", "Ответ")
+
+    # Act
+    with pytest.raises(ValueError):
+        await storage.set_mode(101, "unknown")
+
+    # Assert
+    user = await storage.get_or_create_user(101)
+    assert user["mode"] == "study"
+    assert await storage.get_history(101, 12) == [
+        {"role": "user", "content": "Вопрос"},
+        {"role": "assistant", "content": "Ответ"},
+    ]

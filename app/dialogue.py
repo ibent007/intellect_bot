@@ -6,7 +6,7 @@ import asyncpg
 
 from app.config import LLMSettings
 from app.llm import LLMClient, LLMResponse
-from app.prompts import STUDY_PROMPT
+from app.prompts import SYSTEM_PROMPTS
 from app.storage import DialogueStorage
 
 logger = logging.getLogger("app.dialogue")
@@ -30,8 +30,17 @@ class DialogueService:
         self.settings = settings
         self.locks = defaultdict(asyncio.Lock)
 
-    def build_messages(self, text: str, history: list[dict[str, str]]) -> list[dict[str, str]]:
-        required_size = len(STUDY_PROMPT) + len(text)
+    def build_messages(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        mode: str = "study",
+    ) -> list[dict[str, str]]:
+        prompt = SYSTEM_PROMPTS.get(mode)
+        if prompt is None:
+            raise DialogueError("Неизвестный режим. Выберите /study, /translate или /review.")
+
+        required_size = len(prompt) + len(text)
 
         if required_size > self.settings.context_max_chars:
             raise DialogueError("Вопрос слишком длинный. Сократите его и отправьте ещё раз.")
@@ -48,7 +57,7 @@ class DialogueService:
             history_size -= sum(len(message["content"]) for message in removed)
 
         return [
-            {"role": "system", "content": STUDY_PROMPT},
+            {"role": "system", "content": prompt},
             *selected,
             {"role": "user", "content": text},
         ]
@@ -62,7 +71,7 @@ class DialogueService:
                 history = await self.storage.get_history(
                     chat_id, self.settings.history_max_messages
                 )
-                messages = self.build_messages(text, history)
+                messages = self.build_messages(text, history, mode=user["mode"])
 
                 result = await self.llm.generate(messages, temperature=user["temperature"])
 
@@ -92,3 +101,19 @@ class DialogueService:
             ):
                 logger.warning("Ошибка очистки истории диалога.")
                 raise DialogueError("Не удалось очистить историю. Попробуйте позже.") from None
+
+    async def set_mode(self, chat_id: int, mode: str) -> None:
+        if mode not in SYSTEM_PROMPTS:
+            raise DialogueError("Неизвестный режим. Выберите /study, /translate или /review.")
+
+        async with self.locks[chat_id]:
+            try:
+                await self.storage.set_mode(chat_id, mode)
+            except (
+                asyncpg.PostgresError,
+                asyncpg.InterfaceError,
+                OSError,
+                TimeoutError,
+            ):
+                logger.warning("Ошибка смены режима диалога.")
+                raise DialogueError("Не удалось изменить режим. Попробуйте позже.") from None

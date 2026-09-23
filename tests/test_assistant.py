@@ -27,6 +27,7 @@ def handler_case(monkeypatch):
     storage.get_history = AsyncMock(return_value=[])
     storage.save_turn = AsyncMock()
     storage.clear_history = AsyncMock()
+    storage.set_mode = AsyncMock()
 
     settings = LLMSettings(
         base_url="https://api.groq.com/openai/v1",
@@ -78,12 +79,18 @@ async def test_start_returns_help_without_calling_llm(handler_case):
     assert len(messages) == 1
     assert messages[0].text == (
         "Привет! Я твой AI-ассистент.\n\n"
-        "Сейчас я умею объяснять вопросы по программированию. "
-        "Напиши вопрос обычным текстом.\n\n"
-        "Я учитываю недавнюю историю нашего диалога и сохраняю её после перезапуска.\n\n"
+        "Помогаю разобраться в программировании, перевести текст "
+        "и проверить код.\n\n"
+        "Я учитываю недавнюю историю нашего диалога "
+        "и сохраняю её после перезапуска.\n\n"
         "Команды:\n"
         "/start — показать эту справку.\n"
-        "/reset — очистить историю диалога."
+        "/study — обучение программированию.\n"
+        "/translate — перевод между русским и английским.\n"
+        "/review — проверка кода.\n"
+        "/reset — очистить историю диалога.\n\n"
+        "Выбор режима очищает историю. Temperature сохраняется.\n"
+        "По умолчанию включён режим обучения."
     )
     llm.generate.assert_not_awaited()
 
@@ -241,3 +248,45 @@ async def test_reset_in_group_does_not_clear_history(handler_case, chat_type):
     storage.clear_history.assert_not_awaited()
     llm.generate.assert_not_awaited()
     assert sent_messages(bot) == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "name"),
+    [
+        ("study", "Обучение"),
+        ("translate", "Перевод"),
+        ("review", "Проверка кода"),
+    ],
+)
+async def test_mode_command_changes_mode_without_llm(handler_case, mode, name):
+    # Arrange
+    dispatcher, bot, llm, typing = handler_case
+    storage = dispatcher["dialogue"].storage
+
+    # Act
+    await send_update(handler_case, f"/{mode}")
+
+    # Assert
+    storage.set_mode.assert_awaited_once_with(42, mode)
+    llm.generate.assert_not_awaited()
+    typing.assert_not_called()
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert messages[0].text == (
+        f"Режим: {name}.\nИстория очищена. Temperature сохранена.\nОтправьте новое сообщение."
+    )
+
+
+async def test_mode_command_failure_does_not_report_success(handler_case):
+    # Arrange
+    dispatcher, bot, llm, _ = handler_case
+    dispatcher["dialogue"].storage.set_mode.side_effect = OSError("private-db-details")
+
+    # Act
+    await send_update(handler_case, "/translate")
+
+    # Assert
+    messages = sent_messages(bot)
+    assert len(messages) == 1
+    assert messages[0].text == ("Не удалось изменить режим. Попробуйте позже.")
+    llm.generate.assert_not_awaited()

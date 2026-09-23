@@ -76,3 +76,24 @@ class DialogueStorage:
             "DELETE FROM dialogue_messages WHERE chat_id = $1",
             chat_id,
         )
+
+    async def set_mode(self, chat_id: int, mode: str) -> None:
+        if mode not in ("study", "translate", "review"):
+            raise ValueError("Неизвестный режим.")
+
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    """
+                    INSERT INTO bot_users (chat_id, mode)
+                    VALUES ($1, $2)
+                    ON CONFLICT (chat_id)
+                    DO UPDATE SET mode = EXCLUDED.mode
+                    """,
+                    chat_id,
+                    mode,
+                )
+                await connection.execute(
+                    "DELETE FROM dialogue_messages WHERE chat_id = $1",
+                    chat_id,
+                )

@@ -7,7 +7,7 @@ import pytest
 from app.config import LLMSettings
 from app.dialogue import DialogueError, DialogueService
 from app.llm import LLMError, LLMResponse
-from app.prompts import STUDY_PROMPT
+from app.prompts import STUDY_PROMPT, SYSTEM_PROMPTS
 
 
 @pytest.fixture
@@ -22,6 +22,7 @@ def dialogue_case():
     )
     storage.save_turn = AsyncMock()
     storage.clear_history = AsyncMock()
+    storage.set_mode = AsyncMock()
 
     llm = MagicMock()
     llm.generate = AsyncMock(return_value=LLMResponse(text="Новый ответ"))
@@ -181,3 +182,67 @@ async def test_reset_waits_for_same_user_lock(dialogue_case):
     assert waiting
     assert calls_while_locked == 0
     storage.clear_history.assert_awaited_once_with(101)
+
+
+@pytest.mark.parametrize("mode", ["study", "translate", "review"])
+async def test_reply_uses_saved_mode_prompt(dialogue_case, mode):
+    # Arrange
+    service, storage, llm = dialogue_case
+    storage.get_or_create_user.return_value = {
+        "mode": mode,
+        "temperature": 0.7,
+    }
+    storage.get_history.return_value = []
+
+    # Act
+    await service.reply(101, "Текст пользователя")
+
+    # Assert
+    llm.generate.assert_awaited_once_with(
+        [
+            {"role": "system", "content": SYSTEM_PROMPTS[mode]},
+            {"role": "user", "content": "Текст пользователя"},
+        ],
+        temperature=0.7,
+    )
+
+
+@pytest.mark.parametrize("mode", ["study", "translate", "review"])
+async def test_mode_change_does_not_call_llm(dialogue_case, mode):
+    # Arrange
+    service, storage, llm = dialogue_case
+
+    # Act
+    await service.set_mode(101, mode)
+
+    # Assert
+    storage.set_mode.assert_awaited_once_with(101, mode)
+    llm.generate.assert_not_awaited()
+
+
+async def test_invalid_mode_does_not_change_storage(dialogue_case):
+    # Arrange
+    service, storage, llm = dialogue_case
+
+    # Act
+    with pytest.raises(DialogueError):
+        await service.set_mode(101, "unknown")
+
+    # Assert
+    storage.set_mode.assert_not_awaited()
+    llm.generate.assert_not_awaited()
+
+
+async def test_mode_change_failure_has_safe_message(dialogue_case, caplog):
+    # Arrange
+    service, storage, llm = dialogue_case
+    storage.set_mode.side_effect = OSError("private-db-details")
+
+    # Act
+    with pytest.raises(DialogueError) as error:
+        await service.set_mode(101, "translate")
+
+    # Assert
+    assert error.value.user_message == ("Не удалось изменить режим. Попробуйте позже.")
+    assert "private-db-details" not in caplog.text
+    llm.generate.assert_not_awaited()

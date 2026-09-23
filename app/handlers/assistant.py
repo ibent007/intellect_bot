@@ -1,19 +1,26 @@
 from aiogram import Bot, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from app.dialogue import DialogueError, DialogueService
 from app.llm import LLMError
+from app.prompts import MODE_NAMES
 
 START_TEXT = (
     "Привет! Я твой AI-ассистент.\n\n"
-    "Сейчас я умею объяснять вопросы по программированию. "
-    "Напиши вопрос обычным текстом.\n\n"
-    "Я учитываю недавнюю историю нашего диалога и сохраняю её после перезапуска.\n\n"
+    "Помогаю разобраться в программировании, перевести текст "
+    "и проверить код.\n\n"
+    "Я учитываю недавнюю историю нашего диалога "
+    "и сохраняю её после перезапуска.\n\n"
     "Команды:\n"
     "/start — показать эту справку.\n"
-    "/reset — очистить историю диалога."
+    "/study — обучение программированию.\n"
+    "/translate — перевод между русским и английским.\n"
+    "/review — проверка кода.\n"
+    "/reset — очистить историю диалога.\n\n"
+    "Выбор режима очищает историю. Temperature сохраняется.\n"
+    "По умолчанию включён режим обучения."
 )
 
 UNKNOWN_COMMAND_TEXT = (
@@ -82,12 +89,37 @@ async def reset_command(message: Message, dialogue: DialogueService) -> None:
     )
 
 
+async def mode_command(
+    message: Message,
+    command: CommandObject,
+    dialogue: DialogueService,
+) -> None:
+    mode = command.command
+
+    try:
+        await dialogue.set_mode(message.chat.id, mode)
+    except DialogueError as error:
+        await message.answer(error.user_message, parse_mode=None)
+        return
+
+    await message.answer(
+        f"Режим: {MODE_NAMES[mode]}.\n"
+        "История очищена. Temperature сохранена.\n"
+        "Отправьте новое сообщение.",
+        parse_mode=None,
+    )
+
+
 def create_router() -> Router:
     router = Router(name="assistant")
     router.message.filter(F.chat.type == "private", F.text)
 
     router.message.register(start_command, CommandStart())
     router.message.register(reset_command, Command("reset"))
+    router.message.register(
+        mode_command,
+        Command("study", "translate", "review"),
+    )
     router.message.register(unknown_command, F.text.startswith("/"))
     router.message.register(answer_question)
 
