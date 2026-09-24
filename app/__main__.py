@@ -7,10 +7,14 @@ from aiogram import Dispatcher
 
 from app.config import ConfigError, LLMSettings, Settings
 from app.db import create_pool
+from app.dialogue import DialogueService
 from app.handlers.assistant import create_router
 from app.health import HealthState, start_health_server
 from app.llm import LLMClient
 from app.logging_setup import configure_logging
+from app.reliability import close_resource
+from app.schema import initialize_schema
+from app.storage import DialogueStorage
 from app.telegram import create_bot
 
 logger = logging.getLogger("app")
@@ -24,8 +28,12 @@ async def run(settings: Settings, llm_settings: LLMSettings) -> None:
     try:
         state.pool = await create_pool(settings)
         logger.info("PostgreSQL подключён: SELECT 1 выполнен.")
+        await initialize_schema(state.pool)
+        logger.info("Таблицы настроек и истории готовы.")
         llm_session = aiohttp.ClientSession()
         llm = LLMClient(llm_settings, llm_session)
+        storage = DialogueStorage(state.pool)
+        dialogue = DialogueService(storage, llm, llm_settings)
         # Начальная проверка токена и маршрута через прокси ограничена по времени.
         async with asyncio.timeout(30):
             me = await bot.get_me()
@@ -43,7 +51,7 @@ async def run(settings: Settings, llm_settings: LLMSettings) -> None:
             dispatcher.start_polling(
                 bot,
                 db=state.pool,
-                llm=llm,
+                dialogue=dialogue,
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 close_bot_session=False,
             )
@@ -55,17 +63,21 @@ async def run(settings: Settings, llm_settings: LLMSettings) -> None:
         if state.polling_task and not state.polling_task.done():
             state.polling_task.cancel()
             await asyncio.gather(state.polling_task, return_exceptions=True)
-        if runner:
-            await runner.cleanup()
-        await bot.session.close()
+
+        if runner is not None:
+            await close_resource("health", runner.cleanup)
+
+        await close_resource("telegram", bot.session.close)
+
         if llm_session is not None:
-            await llm_session.close()
-        if state.pool:
-            try:
-                async with asyncio.timeout(10):
-                    await state.pool.close()
-            except TimeoutError:
-                state.pool.terminate()
+            await close_resource("llm", llm_session.close)
+
+        if state.pool is not None:
+            await close_resource(
+                "postgres",
+                state.pool.close,
+                state.pool.terminate,
+            )
 
 
 def main() -> int:
@@ -83,8 +95,11 @@ def main() -> int:
         asyncio.run(run(settings, llm_settings))
     except KeyboardInterrupt:
         logger.info("Бот остановлен.")
-    except Exception:
-        logger.exception("Не удалось запустить бот. Проверьте БД, токен и прокси.")
+    except Exception as error:
+        logger.error(
+            "Ошибка приложения: kind=%s. Проверьте БД, токен и прокси.",
+            type(error).__name__,
+        )
         return 1
     return 0
 

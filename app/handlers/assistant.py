@@ -10,27 +10,20 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from aiogram.utils.chat_action import ChatActionSender
 
 from app.dialogue import DialogueError, DialogueService
 from app.llm import LLMError
 from app.prompts import MODE_NAMES
+from app.reliability import handle_error, typing_indicator
 
 START_TEXT = (
     "Привет! Я твой AI-ассистент.\n\n"
-    "Помогаю разобраться в программировании, перевести текст "
-    "и проверить код.\n\n"
+    "Помогаю разобраться в программировании, "
+    "проверить код и перевести текст.\n\n"
     "Я учитываю недавнюю историю нашего диалога "
     "и сохраняю её после перезапуска.\n\n"
-    "Команды:\n"
-    "/study — обучение программированию.\n"
-    "/translate — перевод между русским и английским.\n"
-    "/review — проверка кода.\n"
-    "/settings — показать настройки.\n"
-    "/temperature — изменить уровень креативности.\n"
-    "/reset — очистить историю диалога.\n"
-    "/start — показать это меню.\n\n"
-    "По умолчанию включён режим обучения."
+    "Выберите действие кнопкой ниже "
+    "или откройте меню команд рядом с полем ввода."
 )
 
 UNKNOWN_COMMAND_TEXT = (
@@ -53,15 +46,15 @@ def main_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📚 Обучение", callback_data="menu:study"),
-                InlineKeyboardButton(text="🌐 Перевод", callback_data="menu:translate"),
+                InlineKeyboardButton(text="🔎 Проверка кода", callback_data="menu:review"),
             ],
             [
-                InlineKeyboardButton(text="🔎 Проверка кода", callback_data="menu:review"),
+                InlineKeyboardButton(text="🌐 Перевод", callback_data="menu:translate"),
                 InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
             ],
             [
                 InlineKeyboardButton(text="🗑 Сброс памяти", callback_data="menu:reset"),
-                InlineKeyboardButton(text="📖 Главное меню", callback_data="menu:home"),
+                InlineKeyboardButton(text="🏠︎ Главное меню", callback_data="menu:home"),
             ],
         ]
     )
@@ -94,10 +87,9 @@ def settings_text(settings: dict) -> str:
         f"Режим: {MODE_NAMES[settings['mode']]}\n"
         f"Модель: {model_name}\n"
         f"Уровень креативности: {settings['temperature']:.1f}\n\n"
-        "Выберите уровень креативности кнопкой ниже.\n"
+        "Выберите уровень креативности кнопкой ниже.\n\n"
         "Меньшие значения обычно дают более сдержанные ответы, "
         "большие — более разнообразные.\n"
-        "Более высокий уровень не гарантирует более правильный ответ."
     )
 
 
@@ -166,7 +158,7 @@ async def answer_question(message: Message, bot: Bot, dialogue: DialogueService)
             )
 
     try:
-        async with ChatActionSender.typing(
+        async with typing_indicator(
             bot=bot,
             chat_id=message.chat.id,
             initial_sleep=4,
@@ -189,7 +181,10 @@ async def reset_command(message: Message, dialogue: DialogueService) -> None:
         return
 
     await message.answer(
-        "История диалога очищена. Режим и уровень креативности сохранены.",
+        "Память диалога очищена.\n\n"
+        "Режим и уровень креативности сохранены.\n"
+        "Сообщения в Telegram остались в чате.\n\n"
+        "Можно начать новый диалог.",
         parse_mode=None,
     )
 
@@ -208,9 +203,11 @@ async def mode_command(
         return
 
     await message.answer(
-        f"Режим: {MODE_NAMES[mode]}\n"
-        "История очищена. Уровень креативности сохранён.\n"
-        "Отправьте новое сообщение.",
+        f"Режим: {MODE_NAMES[mode]}\n\n"
+        "Память диалога очищена.\n"
+        "Уровень креативности сохранён.\n"
+        "Отправьте новое сообщение.\n\n"
+        "Выбор другого режима также очищает память диалога.",
         parse_mode=None,
     )
 
@@ -298,9 +295,10 @@ async def menu_callback(
             await dialogue.set_mode(message.chat.id, action)
             text = (
                 f"Режим: {MODE_NAMES[action]}\n\n"
-                "История очищена. Уровень креативности сохранён.\n"
+                "Память диалога очищена.\n"
+                "Уровень креативности сохранён.\n"
                 "Отправьте новое сообщение.\n\n"
-                "Выбор другого режима также очищает историю."
+                "Выбор другого режима также очищает память диалога."
             )
 
         elif action == "reset":
@@ -348,5 +346,7 @@ def create_router() -> Router:
         menu_callback,
         F.data.startswith("menu:"),
     )
+
+    router.errors.register(handle_error)
 
     return router

@@ -39,7 +39,7 @@ def handler_case(monkeypatch):
     dialogue = DialogueService(storage, llm, settings)
 
     typing = MagicMock(return_value=AsyncMock())
-    monkeypatch.setattr(assistant.ChatActionSender, "typing", typing)
+    monkeypatch.setattr(assistant, "typing_indicator", typing)
 
     dispatcher = Dispatcher()
     dispatcher["dialogue"] = dialogue
@@ -81,19 +81,12 @@ async def test_start_returns_help_without_calling_llm(handler_case):
     assert len(messages) == 1
     assert messages[0].text == (
         "Привет! Я твой AI-ассистент.\n\n"
-        "Помогаю разобраться в программировании, перевести текст "
-        "и проверить код.\n\n"
+        "Помогаю разобраться в программировании, "
+        "проверить код и перевести текст.\n\n"
         "Я учитываю недавнюю историю нашего диалога "
         "и сохраняю её после перезапуска.\n\n"
-        "Команды:\n"
-        "/study — обучение программированию.\n"
-        "/translate — перевод между русским и английским.\n"
-        "/review — проверка кода.\n"
-        "/settings — показать настройки.\n"
-        "/temperature — изменить уровень креативности.\n"
-        "/reset — очистить историю диалога.\n"
-        "/start — показать это меню.\n\n"
-        "По умолчанию включён режим обучения."
+        "Выберите действие кнопкой ниже "
+        "или откройте меню команд рядом с полем ввода."
     )
     llm.generate.assert_not_awaited()
 
@@ -233,7 +226,12 @@ async def test_reset_clears_history_without_calling_llm(handler_case):
     typing.assert_not_called()
     messages = sent_messages(bot)
     assert len(messages) == 1
-    assert messages[0].text == ("История диалога очищена. Режим и уровень креативности сохранены.")
+    assert messages[0].text == (
+        "Память диалога очищена.\n\n"
+        "Режим и уровень креативности сохранены.\n"
+        "Сообщения в Telegram остались в чате.\n\n"
+        "Можно начать новый диалог."
+    )
 
 
 async def test_reset_failure_does_not_report_success(handler_case):
@@ -289,9 +287,11 @@ async def test_mode_command_changes_mode_without_llm(handler_case, mode, name):
     messages = sent_messages(bot)
     assert len(messages) == 1
     assert messages[0].text == (
-        f"Режим: {name}\n"
-        "История очищена. Уровень креативности сохранён.\n"
-        "Отправьте новое сообщение."
+        f"Режим: {name}\n\n"
+        "Память диалога очищена.\n"
+        "Уровень креативности сохранён.\n"
+        "Отправьте новое сообщение.\n\n"
+        "Выбор другого режима также очищает память диалога."
     )
 
 
@@ -605,3 +605,43 @@ async def test_repeated_menu_content_does_not_raise(handler_case):
     assert len(edited_messages(bot)) == 1
     assert len(callback_answers(bot)) == 1
     assert sent_messages(bot) == []
+
+
+async def test_unexpected_error_has_safe_reply_and_log(handler_case, caplog):
+    # Arrange
+    _, bot, llm, _ = handler_case
+    llm.generate.side_effect = RuntimeError("private-user-text fake-api-key")
+
+    # Act
+    await send_update(handler_case, "private-user-text")
+
+    # Assert
+    assert sent_messages(bot)[0].text == ("Не удалось обработать запрос. Попробуйте позже.")
+    assert "kind=RuntimeError" in caplog.text
+    assert "private-user-text" not in caplog.text
+    assert "fake-api-key" not in caplog.text
+
+
+async def test_telegram_send_failure_does_not_leak_answer(handler_case, caplog):
+    # Arrange
+    _, bot, _, _ = handler_case
+
+    async def fail_send(*args, **kwargs):
+        method = args[1]
+        if isinstance(method, SendMessage):
+            raise TelegramBadRequest(
+                method=method,
+                message="private-answer",
+            )
+        return True
+
+    bot.session.side_effect = fail_send
+
+    # Act
+    await send_update(handler_case, "Вопрос")
+
+    # Assert
+    assert len(sent_messages(bot)) == 1
+    assert "kind=TelegramBadRequest" in caplog.text
+    assert "private-answer" not in caplog.text
+    assert "Ответ модели" not in caplog.text

@@ -46,6 +46,8 @@ async def test_telegram_failure_closes_pool_and_session(monkeypatch, llm_setting
     # Arrange
     from app import __main__ as application
 
+    monkeypatch.setattr(application, "initialize_schema", AsyncMock())
+
     pool = Mock(close=AsyncMock())
     bot = Mock(
         get_me=AsyncMock(side_effect=ConnectionError("proxy offline")),
@@ -115,3 +117,36 @@ async def test_http_proxy_receives_connect_and_failure_has_no_direct_fallback(un
         await bot.session.close()
         server.close()
         await server.wait_closed()
+
+
+async def test_failed_telegram_close_still_closes_llm_and_pool(monkeypatch, llm_settings, caplog):
+    # Arrange
+    from app import __main__ as application
+
+    pool = Mock(close=AsyncMock())
+    session = Mock(close=AsyncMock())
+    bot = Mock(
+        get_me=AsyncMock(side_effect=ConnectionError("startup failed")),
+        session=Mock(close=AsyncMock(side_effect=OSError("private-close-details"))),
+    )
+
+    monkeypatch.setattr(application, "create_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(application, "create_bot", Mock(return_value=bot))
+    monkeypatch.setattr(application, "initialize_schema", AsyncMock())
+    monkeypatch.setattr(
+        application.aiohttp,
+        "ClientSession",
+        Mock(return_value=session),
+    )
+
+    # Act
+    with pytest.raises(ConnectionError):
+        await application.run(
+            Settings(bot_token="unused", postgres_password="unused"),
+            llm_settings,
+        )
+
+    # Assert
+    session.close.assert_awaited_once()
+    pool.close.assert_awaited_once()
+    assert "private-close-details" not in caplog.text
