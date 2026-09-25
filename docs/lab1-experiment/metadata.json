@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-25T19:06:28.542057+03:00",
+  "api_base_url": "https://api.groq.com/openai/v1",
+  "model": "qwen/qwen3.8-27b",
+  "mode": "study",
+  "reasoning_effort": "low",
+  "max_completion_tokens": 4096,
+  "history_max_messages": 12,
+  "context_max_chars": 6000,
+  "temperatures": [
+    0.0,
+    0.3,
+    0.7,
+    1.0
+  ],
+  "runs_per_temperature": 3,
+  "history": "Очищается через /reset перед каждым запросом"
+}
