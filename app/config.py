@@ -97,6 +97,8 @@ class LLMSettings:
     reasoning_effort: str = "low"
     timeout_seconds: int = 60
     max_completion_tokens: int = 2048
+    history_max_messages: int = 12
+    context_max_chars: int = 6000
 
     @classmethod
     def load(
@@ -157,4 +159,6 @@ class LLMSettings:
             reasoning_effort=effort,
             timeout_seconds=positive_integer("LLM_TIMEOUT_SECONDS", "60"),
             max_completion_tokens=positive_integer("LLM_MAX_COMPLETION_TOKENS", "2048"),
+            history_max_messages=positive_integer("LLM_HISTORY_MAX_MESSAGES", "12"),
+            context_max_chars=positive_integer("LLM_CONTEXT_MAX_CHARS", "6000"),
         )

@@ -14,7 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.request import urlopen
 
-from app.config import Settings
+from app.config import LLMSettings, Settings
 from scripts.common import CommandError, compose_quote, private_write, run_command
 from scripts.local import prepare_env
 
@@ -411,7 +411,7 @@ class Cloud:
                 time.sleep(5)
         raise CommandError("SSH не стал доступен за 10 минут; проверьте --ssh-cidr и сеть.")
 
-    def deploy(self, instance: dict, settings: Settings) -> None:
+    def deploy(self, instance: dict, settings: Settings, llm_settings: LLMSettings) -> None:
         self.wait_ssh(instance)
         print("Ждём установки Docker на ВМ…", flush=True)
         self.ssh(
@@ -433,6 +433,9 @@ class Cloud:
             archive.unlink(missing_ok=True)
         # Конфиг передаётся по stdin SSH, не через argv, Docker build или metadata.
         values = {key.upper(): str(value) for key, value in asdict(settings).items()}
+        values.update(
+            {f"LLM_{key.upper()}": str(value) for key, value in asdict(llm_settings).items()}
+        )
         values.update(POSTGRES_HOST="db", POSTGRES_PORT="5432")
         content = "".join(f"{key}={compose_quote(value)}\n" for key, value in values.items())
         payload = base64.b64encode(content.encode("utf-8")).decode("ascii")
@@ -494,7 +497,9 @@ def cloud_main(root: Path, args) -> int:
             raise CommandError(f"Установите OpenSSH: не найдена команда {command}.")
     settings = None
     if args.action == "up":
-        settings = Settings.load(prepare_env(root, cloud=True))
+        path = prepare_env(root, cloud=True)
+        settings = Settings.load(path)
+        llm_settings = LLMSettings.load(path)
     if args.action != "up" and not (root / ".deploy" / "state.json").exists():
         raise CommandError("Нет состояния деплоя. Сначала выполните deploy up.")
     yc_path = install_yc()
@@ -531,7 +536,7 @@ def cloud_main(root: Path, args) -> int:
             instance = deployment.provision(args)
             if instance.get("status") == "STOPPED":
                 yc(["compute", "instance", "start", "--id", instance["id"]])
-            deployment.deploy(deployment.instance(), settings)
+            deployment.deploy(deployment.instance(), settings, llm_settings)
         elif args.action in {"start", "stop"}:
             instance = deployment.instance()
             desired = "RUNNING" if args.action == "start" else "STOPPED"

@@ -316,7 +316,7 @@ def test_deploy_uploads_secrets_only_over_ssh_stdin(tmp_path, monkeypatch):
     # Arrange
     import base64
 
-    from app.config import Settings
+    from app.config import LLMSettings, Settings
 
     deployment = cloud(tmp_path, FakeYC())
     (tmp_path / "app").mkdir()
@@ -334,8 +334,13 @@ def test_deploy_uploads_secrets_only_over_ssh_stdin(tmp_path, monkeypatch):
         postgres_password="p$a#s's",
         telegram_proxy_url="http://user:password@proxy:3128",
     )
+    llm_settings = LLMSettings(
+        base_url="https://llm.example/v1",
+        api_key="secret-llm-key",
+        model="test-model",
+    )
     # Act
-    deployment.deploy({}, settings)
+    deployment.deploy({}, settings, llm_settings)
     # Assert
     assert all("secret-token" not in command for command, _ in calls)
     env_payload = next(
@@ -346,6 +351,11 @@ def test_deploy_uploads_secrets_only_over_ssh_stdin(tmp_path, monkeypatch):
     values = dotenv_values(
         stream=StringIO(base64.b64decode(env_payload).decode()), interpolate=False
     )
+    assert values["LLM_API_KEY"] == "secret-llm-key"
+    assert values["LLM_MODEL"] == "test-model"
+    assert values["LLM_BASE_URL"] == "https://llm.example/v1"
+    assert values["LLM_CONTEXT_MAX_CHARS"] == "6000"
+    assert all("secret-llm-key" not in command for command, _ in calls)
     assert values["BOT_TOKEN"] == "secret-token"
     assert values["POSTGRES_PASSWORD"] == "p$a#s's"
     assert values["POSTGRES_HOST"] == "db"
