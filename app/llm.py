@@ -35,6 +35,7 @@ class LLMResponse:
     text: str = field(repr=False)
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    mode: str | None = None
 
 
 class LLMClient:

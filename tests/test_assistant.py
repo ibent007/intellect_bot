@@ -288,6 +288,7 @@ async def test_mode_command_changes_mode_without_llm(handler_case, mode, name):
     assert len(messages) == 1
     assert messages[0].text == (
         f"Режим: {name}\n\n"
+        f"{assistant.translation_hint(mode)}"
         "Память диалога очищена.\n"
         "Уровень креативности сохранён.\n"
         "Отправьте новое сообщение.\n\n"
@@ -435,7 +436,6 @@ async def test_start_has_inline_menu(handler_case):
         "menu:review",
         "menu:settings",
         "menu:reset",
-        "menu:home",
     }
 
 

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections import defaultdict
+from dataclasses import replace
 
 import asyncpg
 
@@ -76,7 +77,7 @@ class DialogueService:
                 result = await self.llm.generate(messages, temperature=user["temperature"])
 
                 await self.storage.save_turn(chat_id, text, result.text)
-                return result
+                return replace(result, mode=user["mode"])
 
             except (
                 asyncpg.PostgresError,

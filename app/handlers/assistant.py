@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import suppress
+from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -41,39 +42,70 @@ TEMPERATURE_BUTTONS = {
 }
 
 
-def main_keyboard() -> InlineKeyboardMarkup:
+def main_keyboard(current: str = "home") -> InlineKeyboardMarkup:
+    actions = [
+        ("📚 Обучение", "study"),
+        ("🔎 Проверка кода", "review"),
+        ("🌐 Перевод", "translate"),
+        ("⚙️ Настройки", "settings"),
+        ("🗑 Сброс памяти", "reset"),
+        ("🏠 Главное меню", "home"),
+    ]
+
+    buttons = [
+        InlineKeyboardButton(
+            text=label,
+            callback_data=f"menu:{action}",
+        )
+        for label, action in actions
+        if action != current
+    ]
+
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📚 Обучение", callback_data="menu:study"),
-                InlineKeyboardButton(text="🔎 Проверка кода", callback_data="menu:review"),
-            ],
-            [
-                InlineKeyboardButton(text="🌐 Перевод", callback_data="menu:translate"),
-                InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
-            ],
-            [
-                InlineKeyboardButton(text="🗑 Сброс памяти", callback_data="menu:reset"),
-                InlineKeyboardButton(text="🏠︎ Главное меню", callback_data="menu:home"),
-            ],
-        ]
+        inline_keyboard=[buttons[index : index + 2] for index in range(0, len(buttons), 2)]
     )
 
 
-def settings_keyboard(temperature: float) -> InlineKeyboardMarkup:
+def settings_keyboard(
+    temperature: float,
+    show_back: bool = True,
+) -> InlineKeyboardMarkup:
+    prefix = "menu:temperature" if show_back else "settings:temperature"
+
     buttons = [
         InlineKeyboardButton(
             text=f"✓ {label}" if value == temperature else label,
-            callback_data=f"menu:temperature:{label}",
+            callback_data=f"{prefix}:{label}",
         )
         for label, value in TEMPERATURE_BUTTONS.items()
     ]
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            buttons,
-            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu:home")],
-        ]
+    rows = [buttons]
+
+    if show_back:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Главное меню",
+                    callback_data="menu:home",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def translation_hint(mode: str) -> str:
+    if mode != "translate":
+        return ""
+
+    return (
+        "Язык оригинала: определяется автоматически.\n"
+        "Язык перевода: укажите в каждом сообщении.\n"
+        "Например: «На немецкий: Доброе утро».\n\n"
+        "Без указания языка: русский → английский, "
+        "английский → русский.\n"
+        "Для остальных языков бот уточнит направление.\n\n"
     )
 
 
@@ -87,6 +119,7 @@ def settings_text(settings: dict) -> str:
         f"Режим: {MODE_NAMES[settings['mode']]}\n"
         f"Модель: {model_name}\n"
         f"Уровень креативности: {settings['temperature']:.1f}\n\n"
+        f"{translation_hint(settings['mode'])}"
         "Выберите уровень креативности кнопкой ниже.\n\n"
         "Меньшие значения обычно дают более сдержанные ответы, "
         "большие — более разнообразные.\n"
@@ -110,7 +143,7 @@ async def edit_menu(
             raise
 
 
-def split_answer(text: str) -> list[str]:
+def split_answer(text: str, limit: int = 4000) -> list[str]:
     parts = []
     start = 0
     size = 0
@@ -118,7 +151,7 @@ def split_answer(text: str) -> list[str]:
     for position, character in enumerate(text):
         character_size = 2 if ord(character) > 0xFFFF else 1
 
-        if size + character_size > 4000:
+        if size + character_size > limit:
             parts.append(text[start:position])
             start = position
             size = 0
@@ -129,6 +162,27 @@ def split_answer(text: str) -> list[str]:
         parts.append(text[start:])
 
     return parts
+
+
+async def send_translation(message: Message, text: str) -> bool:
+    heading, separator, translation = text.partition("\n\n")
+    if (
+        not separator
+        or not translation.strip()
+        or heading.count("→") != 1
+        or "\n" in heading
+        or len(heading) > 80
+    ):
+        return False
+
+    for index, part in enumerate(split_answer(translation, limit=3900)):
+        prefix = f"{escape(heading)}\n\n" if index == 0 else ""
+        await message.answer(
+            f"{prefix}<code>{escape(part)}</code>",
+            parse_mode="HTML",
+        )
+
+    return True
 
 
 async def start_command(message: Message) -> None:
@@ -169,6 +223,9 @@ async def answer_question(message: Message, bot: Bot, dialogue: DialogueService)
         await message.answer(error.user_message, parse_mode=None)
         return
 
+    if result.mode == "translate" and await send_translation(message, result.text):
+        return
+
     for part in split_answer(result.text):
         await message.answer(part, parse_mode=None)
 
@@ -204,6 +261,7 @@ async def mode_command(
 
     await message.answer(
         f"Режим: {MODE_NAMES[mode]}\n\n"
+        f"{translation_hint(mode)}"
         "Память диалога очищена.\n"
         "Уровень креативности сохранён.\n"
         "Отправьте новое сообщение.\n\n"
@@ -221,7 +279,10 @@ async def settings_command(message: Message, dialogue: DialogueService) -> None:
 
     await message.answer(
         settings_text(settings),
-        reply_markup=settings_keyboard(settings["temperature"]),
+        reply_markup=settings_keyboard(
+            settings["temperature"],
+            show_back=False,
+        ),
         parse_mode=None,
     )
 
@@ -293,8 +354,10 @@ async def menu_callback(
 
         elif action in MODE_NAMES:
             await dialogue.set_mode(message.chat.id, action)
+            keyboard = main_keyboard(current=action)
             text = (
                 f"Режим: {MODE_NAMES[action]}\n\n"
+                f"{translation_hint(action)}"
                 "Память диалога очищена.\n"
                 "Уровень креативности сохранён.\n"
                 "Отправьте новое сообщение.\n\n"
@@ -303,6 +366,7 @@ async def menu_callback(
 
         elif action == "reset":
             await dialogue.reset(message.chat.id)
+            keyboard = main_keyboard(current="reset")
             text = (
                 "Память диалога очищена.\n\n"
                 "Режим и уровень креативности сохранены.\n"
@@ -327,6 +391,45 @@ async def menu_callback(
     await edit_menu(message, text, keyboard)
 
 
+async def standalone_settings_callback(
+    callback: CallbackQuery,
+    dialogue: DialogueService,
+) -> None:
+    message = callback.message
+
+    if (
+        not isinstance(message, Message)
+        or message.chat.type != "private"
+        or message.chat.id != callback.from_user.id
+    ):
+        await callback.answer("Откройте настройки в личном чате.", show_alert=True)
+        return
+
+    label = (callback.data or "").removeprefix("settings:temperature:")
+
+    if label not in TEMPERATURE_BUTTONS:
+        await callback.answer("Неизвестное значение.", show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        await dialogue.set_temperature(
+            message.chat.id,
+            TEMPERATURE_BUTTONS[label],
+        )
+        settings = await dialogue.get_settings(message.chat.id)
+    except DialogueError as error:
+        await message.answer(error.user_message, parse_mode=None)
+        return
+
+    await edit_menu(
+        message,
+        settings_text(settings),
+        settings_keyboard(settings["temperature"], show_back=False),
+    )
+
+
 def create_router() -> Router:
     router = Router(name="assistant")
     router.message.filter(F.chat.type == "private", F.text)
@@ -345,6 +448,10 @@ def create_router() -> Router:
     router.callback_query.register(
         menu_callback,
         F.data.startswith("menu:"),
+    )
+    router.callback_query.register(
+        standalone_settings_callback,
+        F.data.startswith("settings:temperature:"),
     )
 
     router.errors.register(handle_error)
